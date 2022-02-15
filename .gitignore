@@ -1,0 +1,6 @@
+*
+!*.leor
+!*.py
+!tests
+!.gitignore
+!.vscode

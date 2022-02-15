@@ -1,0 +1,13 @@
+def str_len(
+    const str: Char = 0
+) -> Int {
+    
+    return 14;
+};
+
+def main() -> Int {
+    
+    write(1, "Hello world!\n", 9 + 4);
+
+    return 0;
+};
