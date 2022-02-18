@@ -842,6 +842,10 @@ class Regs:
         return cls.reg_args[idx]
 
 
+class BasicProgram:
+    pass
+
+
 class BasicType:
     pass
 
@@ -851,13 +855,19 @@ class Type(BasicType):
     name: str = attr.ib(init=True)
     size: int = attr.ib(init=True)
 
-    binary_ops: dict[str, dict[BasicType, Callable[[Any, Register], str]]] = attr.ib(default={})
+    binary_ops: dict[
+        str,
+        dict[
+            BasicType,
+            Callable[[BasicProgram, Register], str]
+        ]
+    ] = attr.ib(default={})
 
     def op(
         self, op: str,
         type_right: BasicType,
         pos: tuple[int, int]
-    ) -> Callable[[Any, Register], str]:
+    ) -> Callable[[BasicProgram, Register], str]:
         row, col = pos
         right = cast(type(self), type_right)
 
@@ -894,11 +904,11 @@ class Env:
     variables: Dict[str, Var] = attr.ib(init=True)
 
     # TODO: add proper types
-    params: Dict[str, str] = attr.ib(init=False, default={})
+    params: Dict[str, Type] = attr.ib(init=False, default={})
 
 
 @attr.s
-class Program:
+class Program(BasicProgram):
     # Segments
     code: str = attr.ib(default="")
     data: str = attr.ib(default="")
