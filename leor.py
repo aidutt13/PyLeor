@@ -1,11 +1,11 @@
 #!./venv/bin/python3
 
-from audioop import reverse
+import copy
 import attr
 import re
 from enum import Enum
 from typing import \
-    Any, Literal, cast, Callable, Dict, List, Tuple, Union
+    Literal, cast, Callable, Dict, List, Tuple, Union
 
 
 #region Helpers
@@ -655,27 +655,19 @@ class Parser:
 
 
 #region Program
-class Addr(int):
-    pass
-
-
-class Size(int):
-    pass
-
-
 @attr.s(slots=True)
 class Memory:
 
     capacity: int = attr.ib(default=0)
-    allocated: Dict[Addr, Size] = attr.ib(default={})
-    unallocated: List[Tuple[Addr, Size]] = attr.ib(default=[])
+    allocated: Dict[int, int] = attr.ib(default={})
+    unallocated: List[Tuple[int, int]] = attr.ib(default=[])
 
-    def find_free_unallocated(self, size: Size) -> Addr | None:
+    def find_free_unallocated(self, size: int) -> int | None:
         for i, v in enumerate(self.unallocated):
             (a, s) = v
             if size <= s:
                 if size < s:
-                    self.unallocated.append((Addr(a+size), Size(s-size)))
+                    self.unallocated.append((a+size, s-size))
                 self.unallocated.pop(i)
                 i -= 1
                 self.allocated[a] = size
@@ -683,16 +675,16 @@ class Memory:
         return None
                 
 
-    def alloc(self, size: Size) -> Addr:
+    def alloc(self, size: int) -> int:
         a = self.find_free_unallocated(size)
         if a is not None:
             return a
-        a = Addr(self.capacity)
+        a = self.capacity
         self.allocated[a] = size
         self.capacity += size
         return a
 
-    def free(self, addr: Addr):
+    def free(self, addr: int):
         try:
             size = self.allocated.pop(addr)
         except:
@@ -861,7 +853,7 @@ class Type(BasicType):
             BasicType,
             Callable[[BasicProgram, Register], str]
         ]
-    ] = attr.ib(default={})
+    ] = attr.ib()
 
     def op(
         self, op: str,
@@ -888,9 +880,19 @@ class Type(BasicType):
 
 
 @attr.s(slots=True)
+class PtrType(Type):
+    pointing_to: Type = attr.ib(init=False)
+
+    def __call__(self, pointing_to: Type) -> Type:
+        tp = copy.deepcopy(self)
+        tp.pointing_to = pointing_to
+        return tp
+
+
+@attr.s(slots=True)
 class Var:
-    index: Addr = attr.ib(init=True)
-    size: Size = attr.ib(init=True)
+    index: int = attr.ib(init=True)
+    size: int = attr.ib(init=True)
     # TODO: Type structure
     type: Type = attr.ib(init=True)
     const: bool = attr.ib(init=True)
@@ -903,8 +905,8 @@ class Env:
     parent: str | None = attr.ib(init=True)
     variables: Dict[str, Var] = attr.ib(init=True)
 
-    # TODO: add proper types
-    params: Dict[str, Type] = attr.ib(init=False, default={})
+    types: Dict[str, Type] = attr.ib(kw_only=True)
+    params: List[Type] = attr.ib(kw_only=True)
 
 
 @attr.s
@@ -915,7 +917,7 @@ class Program(BasicProgram):
     bss:  str = attr.ib(default="")
 
     envs: Dict[str, Env] = attr.ib(
-        default={ "": Env("", [], None, {}) }
+        default={ "": Env("", [], None, {}, types={}, params=[]) }
     ) # Global scope
     current_env_name: str = attr.ib(default="") # Global scope
 
@@ -951,6 +953,17 @@ class Program(BasicProgram):
                 return self.envs[func_name]
             env = self.envs.get(env.parent) if env.parent is not None else None
 
+        return None
+
+    def lookup_type(self, type_name: str, env_name: str | None = None) -> Type | None:
+        env: Env | None = self.envs.get(self.current_env_name) if env_name is None else self.envs.get(env_name)
+        assert env is not None, "Compiler error: not in any scope"
+
+        while env is not None:
+            if env.types.get(type_name):
+                return env.types[type_name]
+            env = self.envs.get(env.parent) if env.parent is not None else None
+        
         return None
 #endregion
 
@@ -988,13 +1001,22 @@ def fasm_linux_x86_64_compile_node(prog: Program, ast: AST, reg: Register):
             if prog.lookup_func(declnode.name) or prog.lookup_var(declnode.name):
                 raise CompilationError(f"ERROR: Variable {declnode.name} already exists")
 
-            idx = prog.mem.alloc(Size(8))
+            tp = prog.lookup_type(declnode.type)
 
-            var = Var(idx, Size(8), declnode.type, declnode.const)
+            if tp is None:
+                raise CompilationError(
+                    f"{row}:{col}:ERROR: Type '{declnode.type}' does not exist in current scope"
+                )
+
+            idx = prog.mem.alloc(tp.size)
+
+            var = Var(idx, tp.size, tp, declnode.const)
             prog.current_env.variables[declnode.name] = var 
 
             if declnode.const and not declnode.value:
-                raise CompilationError(f"ERROR: Constant variable has to be initialized; '{declnode.name}' {ast.pos}")
+                raise CompilationError(
+                    f"{row}:{col}:ERROR: Constant variable has to be initialized"
+                )
 
             if declnode.value:
                 fasm_linux_x86_64_compile_node(prog, cast(AST, declnode.value), reg)
@@ -1011,7 +1033,8 @@ def fasm_linux_x86_64_compile_node(prog: Program, ast: AST, reg: Register):
 
             # TODO: types
             prog.envs[funcnode.name] = Env(
-                funcnode.name, [], prog.current_env_name, {}
+                funcnode.name, [], prog.current_env_name, {},
+                types={}, params=[]
             )
             prog.current_env.children.append(funcnode.name)
             prog.current_env_name = funcnode.name
@@ -1022,8 +1045,8 @@ def fasm_linux_x86_64_compile_node(prog: Program, ast: AST, reg: Register):
             # Add every existing variables to params.
             # There are no variables other than params,
             # because we don't compile body yet
-            for name, var in prog.current_env.variables.items():
-                prog.current_env.params[name] = var.type
+            for _, var in prog.current_env.variables.items():
+                prog.current_env.params.append(var.type)
 
             prog.code += f"{funcnode.name}:\n"
             fasm_linux_x86_64_compile_node(prog, cast(AST, funcnode.body), reg)
@@ -1148,11 +1171,22 @@ __start:
   syscall
 """
 
+    # add built-in types
+    int_type = Type("Int", 8, {})
+    char_type = Type("Char", 1, {})
+    ptr_type = PtrType("Ptr", 8, {})
+
     # add built-in functions
 
     #write
-    env_write = Env("write", [], prog.current_env_name, {})
-    env_write.params = {"fd": "Int", "buf": "Char", "Count": "Int"}
+    env_write = Env(
+        "write", [], prog.current_env_name, {}, types={}, params=[]
+    )
+    env_write.params = [
+        int_type,
+        ptr_type(char_type),
+        int_type
+    ]
     prog.current_env.children.append("write") if prog.current_env else 1
     prog.envs["write"] = env_write
 
